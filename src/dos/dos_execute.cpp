@@ -406,7 +406,7 @@ bool DOS_Execute(const char* name, PhysPt block_pt, Bit8u flags) {
 	} else loadseg=block.overlay.loadseg;
 	/* Load the executable */
 	loadaddress=PhysMake(loadseg,0);
-
+  LOG_MSG("Executing %s, loaded at 0x%04x", name, loadseg);
 	if (iscom) {	/* COM Load 64k - 256 bytes max */
 		/* how big is the COM image? make sure it fits */
 		pos=0;DOS_SeekFile(fhandle,&pos,DOS_SEEK_END);

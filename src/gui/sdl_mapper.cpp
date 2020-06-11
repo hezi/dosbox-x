@@ -2921,7 +2921,7 @@ static void SetActiveBind(CBind * _bind) {
 }
 
 static void SetActiveEvent(CEvent * event) {
-	assert(event);
+	//assert(event);
     mapper.aevent=event;
     mapper.redraw=true;
     mapper.addbind=false;
