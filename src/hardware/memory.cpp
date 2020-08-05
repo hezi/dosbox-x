@@ -117,7 +117,11 @@ public:
 
 class IllegalPageHandler : public PageHandler {
 public:
-    IllegalPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {}
+    IllegalPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {
+#if C_DEBUG
+		debug_pagehandler=NULL;
+#endif
+    }
     Bit8u readb(PhysPt addr) {
         (void)addr;
 #if C_DEBUG
@@ -148,7 +152,11 @@ public:
 
 class RAMPageHandler : public PageHandler {
 public:
-    RAMPageHandler() : PageHandler(PFLAG_READABLE|PFLAG_WRITEABLE) {}
+    RAMPageHandler() : PageHandler(PFLAG_READABLE|PFLAG_WRITEABLE) {
+#if C_DEBUG
+		debug_pagehandler=NULL;
+#endif
+    }
     RAMPageHandler(Bitu flags) : PageHandler(flags) {}
     HostPt GetHostReadPt(Bitu phys_page) {
         if (!a20_fast_changeable || (phys_page & (~0xFul/*64KB*/)) == 0x100ul/*@1MB*/)
@@ -181,6 +189,9 @@ class ROMPageHandler : public RAMPageHandler {
 public:
     ROMPageHandler() {
         flags=PFLAG_READABLE|PFLAG_HASROM;
+#if C_DEBUG
+		debug_pagehandler=NULL;
+#endif
     }
     void writeb(PhysPt addr,Bit8u val){
         if (IS_PC98_ARCH && (addr & ~0x7FFF) == 0xE0000u)
@@ -209,6 +220,11 @@ static IllegalPageHandler illegal_page_handler;
 static RAMPageHandler ram_page_handler;
 static ROMPageHandler rom_page_handler;
 static ROMAliasPageHandler rom_page_alias_handler;
+#if C_DEBUG
+static DebugPageHandler illegal_debug_page_handler(&illegal_page_handler);
+static DebugPageHandler ram_debug_page_handler(&ram_page_handler);
+static DebugPageHandler rom_debug_page_handler(&rom_page_handler);
+#endif
 
 PageHandler &Get_ROM_page_handler(void) {
     return rom_page_handler;

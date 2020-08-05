@@ -85,6 +85,9 @@ static CacheBlockDynRec link_blocks[2];		// default linking (specially marked)
 class CodePageHandlerDynRec : public PageHandler {
 public:
     CodePageHandlerDynRec() {
+#if C_DEBUG
+    debug_pagehandler=NULL;
+#endif
     }
 
 	void SetupAt(Bitu _phys_page,PageHandler * _old_pagehandler) {
@@ -736,6 +739,9 @@ static void cache_init(bool enable) {
 		// setup the code pages
 		for (i=0;i<CACHE_PAGES;i++) {
 			CodePageHandlerDynRec * newpage=new CodePageHandlerDynRec();
+#if C_DEBUG
+      DebugPageHandler * debugpage=new DebugPageHandler(newpage);
+#endif
 			newpage->next=cache.free_pages;
 			cache.free_pages=newpage;
 		}

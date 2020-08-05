@@ -131,12 +131,22 @@ extern unsigned char        pc98_text_row_scroll_num_lines;      /* port 7Ah */
 extern bool logBuffSuppressConsole;
 extern bool logBuffSuppressConsoleNeedUpdate;
 
+typedef int (*SearchFunc)(Bit8u lhs, Bit8u rhs, Bit8u val);
 // Forwards
 static void DrawCode(void);
 static void DrawInput(void);
 static void DEBUG_RaiseTimerIrq(void);
 static void SaveMemory(Bit16u seg, Bit32u ofs1, Bit32u num);
 static void SaveMemoryBin(Bit16u seg, Bit32u ofs1, Bit32u num);
+
+static void InitSearch(Bitu seg, Bitu ofs1, Bit32u num);
+static void DoSearch(SearchFunc op, Bit8u val);
+static int SearchFnEq(Bit8u lhs, Bit8u rhs, Bit8u val);
+static int SearchFnNe(Bit8u lhs, Bit8u rhs, Bit8u val);
+static int SearchFnLt(Bit8u lhs, Bit8u rhs, Bit8u val);
+static int SearchFnGt(Bit8u lhs, Bit8u rhs, Bit8u val);
+static int SearchFnEqVal(Bit8u lhs, Bit8u rhs, Bit8u val);
+
 static void LogMCBS(void);
 static void LogGDT(void);
 static void LogLDT(void);
@@ -226,25 +236,6 @@ char* AnalyzeInstruction(char* inst, bool saveSelector);
 Bit32u GetHexValue(char* const str, char* &hex,bool *parsed=NULL);
 void SkipSpace(char*& hex);
 
-#if 0
-class DebugPageHandler : public PageHandler {
-public:
-	Bit8u readb(PhysPt /*addr*/) {
-	}
-	Bit16u readw(PhysPt /*addr*/) {
-	}
-	Bit32u readd(PhysPt /*addr*/) {
-	}
-	void writeb(PhysPt /*addr*/,Bit8u /*val*/) {
-	}
-	void writew(PhysPt /*addr*/,Bit16u /*val*/) {
-	}
-	void writed(PhysPt /*addr*/,Bit32u /*val*/) {
-	}
-};
-#endif
-
-
 class DEBUG;
 
 //DEBUG*	pDebugcom	= 0;
@@ -276,6 +267,16 @@ extern Bitu cycle_count;
 static bool debugging = false;
 static bool debug_running = false;
 static bool check_rescroll = false;
+
+static bool membp_raised = false;
+ 
+static Bit32u SearchLength = 0;
+static Bitu SearchSeg;
+static Bitu SearchOfs;
+static Bit8u *SearchBuffer = NULL;
+static Bit8u *SearchBufferValid = NULL;
+#define MAX_SEARCH_RESULTS	20
+static Bitu SearchResults[MAX_SEARCH_RESULTS][2]; // Seg:Ofs
 
 bool IsDebuggerActive(void) {
     return debugging;
@@ -445,7 +446,7 @@ std::vector<CDebugVar*> CDebugVar::varList;
 
 bool skipFirstInstruction = false;
 
-enum EBreakpoint { BKPNT_UNKNOWN, BKPNT_PHYSICAL, BKPNT_INTERRUPT, BKPNT_MEMORY, BKPNT_MEMORY_PROT, BKPNT_MEMORY_LINEAR };
+enum EBreakpoint { BKPNT_UNKNOWN, BKPNT_PHYSICAL, BKPNT_INTERRUPT, BKPNT_MEMORY, BKPNT_MEMORY_PROT, BKPNT_MEMORY_LINEAR, BKPNT_MEMORY_ACCESS, BKPNT_MEMORY_PROT_ACCESS, BKPNT_MEMORY_LINEAR_ACCESS, BKPNT_CHEAT, BKPNT_CHEAT_PROT, BKPNT_CHEAT_LINEAR };
 
 #define BPINT_ALL 0x100
 
@@ -456,6 +457,10 @@ public:
 	CBreakpoint(void);
 	void					SetAddress		(Bit16u seg, Bit32u off)	{ location = (PhysPt)GetAddress(seg,off); type = BKPNT_PHYSICAL; segment = seg; offset = off; };
 	void					SetAddress		(PhysPt adr)				{ location = adr; type = BKPNT_PHYSICAL; };
+  
+  void					SetLength		(Bit32u _length)			{ length = _length; };
+  void					SetData			(Bit32u _oldData)			{ oldData = _oldData; };
+	
 	void					SetInt			(Bit8u _intNr, Bit16u ah, Bit16u al)	{ intNr = _intNr, ahValue = ah; alValue = al; type = BKPNT_INTERRUPT; };
 	void					SetOnce			(bool _once)				{ once = _once; };
 	void					SetType			(EBreakpoint _type)			{ type = _type; };
@@ -470,6 +475,10 @@ public:
 	PhysPt					GetLocation		(void)						{ return location; };
 	Bit16u					GetSegment		(void)						{ return segment; };
 	Bit32u					GetOffset		(void)						{ return offset; };
+  
+  Bit32u					GetLength		(void)						{ return length; };
+  Bit32u					GetData			(void)						{ return oldData; };
+	
 	Bit8u					GetIntNr		(void)						{ return intNr; };
 	Bit16u					GetValue		(void)						{ return ahValue; };
 	Bit16u					GetOther		(void)						{ return alValue; };
@@ -478,11 +487,19 @@ public:
 	static CBreakpoint*		AddBreakpoint		(Bit16u seg, Bit32u off, bool once);
 	static CBreakpoint*		AddIntBreakpoint	(Bit8u intNum, Bit16u ah, Bit16u al, bool once);
 	static CBreakpoint*		AddMemBreakpoint	(Bit16u seg, Bit32u off);
+  
+  static CBreakpoint*		AddMemBreakpoint	(Bit16u seg, Bit32u off, Bit32u length);
+  static CBreakpoint*		AddCheatBreakpoint	(Bit16u seg, Bit32u off, Bit8u val);	
+	
 	static void				DeactivateBreakpoints();
 	static void				ActivateBreakpoints	();
 	static void				ActivateBreakpointsExceptAt(PhysPt adr);
 	static bool				CheckBreakpoint		(Bit16u seg, Bit32u off);
 	static bool				CheckIntBreakpoint	(PhysPt adr, Bit8u intNr, Bit16u ahValue, Bit16u alValue);
+	
+	static void				CheckMemBreakpoint	(PhysPt adr);
+
+	
 	static CBreakpoint*		FindPhysBreakpoint	(Bit16u seg, Bit32u off, bool once);
 	static CBreakpoint*		FindOtherActiveBreakpoint(PhysPt adr, CBreakpoint* skip);
 	static bool				IsBreakpoint		(Bit16u seg, Bit32u off);
@@ -496,11 +513,11 @@ private:
 	EBreakpoint	type;
 	// Physical
 	PhysPt		location;
-#if !C_HEAVY_DEBUG
-	Bit8u		oldData;
-#endif
+	Bit8u		oldData; // Data to restore; old code on code breakpoints, initial value on cheat breakpoints
+
 	Bit16u		segment;
 	Bit32u		offset;
+	Bit32u    length;
 	// Int
 	Bit8u		intNr;
 	Bit16u		ahValue;
@@ -553,7 +570,24 @@ void CBreakpoint::Activate(bool _active)
 					mem_writeb(location, oldData);
 			};
 		}
-	}
+	} else if (GetType()==BKPNT_MEMORY || GetType()==BKPNT_MEMORY_LINEAR || GetType()==BKPNT_MEMORY_PROT
+			|| GetType()==BKPNT_MEMORY_ACCESS || GetType()==BKPNT_MEMORY_LINEAR_ACCESS
+			|| GetType()==BKPNT_MEMORY_PROT_ACCESS || GetType()==BKPNT_CHEAT
+			|| GetType()==BKPNT_CHEAT_LINEAR || GetType()==BKPNT_CHEAT_PROT) {
+		if (_active) {
+			PageHandler * ph = MEM_GetPageHandler(GetLocation()>>12);
+			if (!(ph->flags & PFLAG_MEMBP)) {
+				MEM_SetPageHandler(GetLocation()>>12, 1, ph->GetDebugPageHandler());
+				PAGING_UnlinkPages(GetLocation()>>12, 1);
+			}
+		} else {
+			PageHandler * ph = MEM_GetPageHandler(GetLocation()>>12);
+			if ((ph->flags & PFLAG_MEMBP)) {
+				MEM_SetPageHandler(GetLocation()>>12, 1, ph->GetDebugPageHandler());
+				PAGING_UnlinkPages(GetLocation()>>12, 1);
+			}
+		}
+  }
 #endif
 	active = _active;
 }
@@ -579,7 +613,27 @@ CBreakpoint* CBreakpoint::AddIntBreakpoint(Bit8u intNum, Bit16u ah, Bit16u al, b
 	return bp;
 }
 
-CBreakpoint* CBreakpoint::AddMemBreakpoint(Bit16u seg, Bit32u off)
+CBreakpoint* CBreakpoint::AddMemBreakpoint(Bit16u seg, Bit32u off, Bit32u length)
+{
+	CBreakpoint* bp = new CBreakpoint();
+	bp->SetAddress		(seg,off);
+	bp->SetLength		(length);
+	for (PhysPt page = GetAddress(seg,off)>>12; 
+			page <= GetAddress(seg,off+length-1)>>12; page++) {
+		// PhysPt page = GetAddress(seg,off)>>12;
+		PageHandler * ph = MEM_GetPageHandler(page);
+		if (!(ph->flags & PFLAG_MEMBP)) {
+			MEM_SetPageHandler(page, 1, ph->GetDebugPageHandler());
+			PAGING_UnlinkPages(page, 1);
+		}
+	}
+	bp->SetOnce			(false);
+	bp->SetType			(BKPNT_MEMORY);
+	BPoints.push_front	(bp);
+	return bp;
+};
+
+CBreakpoint* CBreakpoint::AddCheatBreakpoint(Bit16u seg, Bit32u off, Bit8u val)
 {
 	CBreakpoint* bp = new CBreakpoint();
 	bp->SetAddress		(seg,off);
@@ -647,36 +701,79 @@ bool CBreakpoint::CheckBreakpoint(Bit16u seg, Bit32u off)
 			}
 			return true;
 		} 
+  }
+	// Memory breakpoint support
+	if (membp_raised == true) {
+		membp_raised = false;
+		return true;
+	}
+	return false;
+}
+
+void CBreakpoint::CheckMemBreakpoint(PhysPt adr)
+// Checks if breakpoint is valid an should stop execution
+{
+	// Search matching breakpoint
+	std::list<CBreakpoint*>::iterator i;
+	CBreakpoint* bp;
+	for(i=BPoints.begin(); i != BPoints.end(); i++) {
+		bp = static_cast<CBreakpoint*>(*i);
 #if C_HEAVY_DEBUG
 		// Memory breakpoint support
-		else if (bp->IsActive()) {
-			if ((bp->GetType()==BKPNT_MEMORY) || (bp->GetType()==BKPNT_MEMORY_PROT) || (bp->GetType()==BKPNT_MEMORY_LINEAR)) {
-				// Watch Protected Mode Memoryonly in pmode
-				if (bp->GetType()==BKPNT_MEMORY_PROT) {
-					// Check if pmode is active
-					if (!cpu.pmode) return false;
-					// Check if descriptor is valid
-					Descriptor desc;
-					if (!cpu.gdt.GetDescriptor(bp->GetSegment(),desc)) return false;
-					if (desc.GetLimit()==0) return false;
-				}
+		if (bp->IsActive()) {
+			// Watch Protected Mode Memoryonly in pmode
+			if (bp->GetType()==BKPNT_MEMORY_PROT || bp->GetType()==BKPNT_MEMORY_PROT_ACCESS || bp->GetType()==BKPNT_CHEAT_PROT) {
+				// Check if pmode is active
+				if (!cpu.pmode) continue;
+				// Check if descriptor is valid
+				Descriptor desc;
+				if (!cpu.gdt.GetDescriptor(bp->GetSegment(),desc)) continue;
+				if (desc.GetLimit()==0) continue;
+			}
 
-				Bitu address; 
-				if (bp->GetType()==BKPNT_MEMORY_LINEAR) address = bp->GetOffset();
-				else address = (Bitu)GetAddress(bp->GetSegment(),bp->GetOffset());
-				Bit8u value=0;
-				if (mem_readb_checked((PhysPt)address,&value)) return false;
+			// Get Physical address of breakpoint
+			Bitu address; 
+			if (bp->GetType()==BKPNT_CHEAT_LINEAR) address = bp->GetOffset();
+			else address = GetAddress(bp->GetSegment(),bp->GetOffset());
+
+			if (!(adr >= address && adr < address + bp->GetLength()))
+				continue;
+
+			if ((bp->GetType()==BKPNT_MEMORY) || (bp->GetType()==BKPNT_MEMORY_PROT) || (bp->GetType()==BKPNT_MEMORY_LINEAR)) {
+				bp->Activate(false);
+				Bit8u value = mem_readb(adr);
+				bp->Activate(true);
 				if (bp->GetValue() != value) {
 					// Yup, memory value changed
-					DEBUG_ShowMsg("DEBUG: Memory breakpoint %s: %04X:%04X - %02X -> %02X\n",(bp->GetType()==BKPNT_MEMORY_PROT)?"(Prot)":"",bp->GetSegment(),bp->GetOffset(),bp->GetValue(),value);
+					DEBUG_ShowMsg("DEBUG: Memory breakpoint %s: %04X:%08X - %02X -> %02X\n",(bp->GetType()==BKPNT_MEMORY_PROT)?"(Prot)":"",bp->GetSegment(),bp->GetOffset(),bp->GetValue(),value);
 					bp->SetValue(value);
-					return true;
+					membp_raised = true;
+					return;
+				};		
+			} else if ((bp->GetType()==BKPNT_MEMORY_ACCESS) || (bp->GetType()==BKPNT_MEMORY_PROT_ACCESS) || (bp->GetType()==BKPNT_MEMORY_LINEAR_ACCESS)) {
+				bp->Activate(false);
+				Bit8u value = mem_readb(adr);
+				bp->Activate(true);
+				DEBUG_ShowMsg("DEBUG: Memory access breakpoint %s: %08X (%02X) breakpoint at (%04X:%08X-%04X:%08X)\n",(bp->GetType()==BKPNT_MEMORY_PROT_ACCESS)?"(Prot)":"",adr, value, bp->GetSegment(),bp->GetOffset(), bp->GetSegment(),bp->GetOffset()+bp->GetLength()-1);
+				membp_raised = true;
+				return;
+			} else if ((bp->GetType()==BKPNT_CHEAT) || (bp->GetType()==BKPNT_CHEAT_PROT) || (bp->GetType()==BKPNT_CHEAT_LINEAR)) {
+				bp->Activate(false);
+				Bit8u value = mem_readb(adr);
+				if (mem_readb_checked(address,&value)) continue;
+				if (bp->GetValue() != value) {
+					// Yup, memory value changed
+					DEBUG_ShowMsg("DEBUG: Memory cheat %s: %04X:%08X - (%02X)\n",(bp->GetType()==BKPNT_CHEAT_PROT)?"(Prot)":"",bp->GetSegment(),bp->GetOffset(),bp->GetData());
+					bp->SetValue(value);
+					// Restore cheat value
+					mem_writeb(adr, bp->GetData());
 				}		
+				bp->Activate(true);
 			}
 		}
 #endif
 	}
-	return false;
+	return;
 }
 
 bool CBreakpoint::CheckIntBreakpoint(PhysPt adr, Bit8u intNr, Bit16u ahValue, Bit16u alValue)
@@ -809,11 +906,25 @@ void CBreakpoint::ShowList(void)
 			else if (bp->GetOther()==BPINT_ALL) DEBUG_ShowMsg("%02X. BPINT %02X AH=%02X\n",nr,bp->GetIntNr(),bp->GetValue());
 			else DEBUG_ShowMsg("%02X. BPINT %02X AH=%02X AL=%02X\n",nr,bp->GetIntNr(),bp->GetValue(),bp->GetOther());
 		} else if (bp->GetType()==BKPNT_MEMORY) {
-			DEBUG_ShowMsg("%02X. BPMEM %04X:%04X (%02X)\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetValue());
+			DEBUG_ShowMsg("%02X. BPM %04X:%04X (%02X)\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetValue());
+		} else if (bp->GetType()==BKPNT_MEMORY_LINEAR) {
+			DEBUG_ShowMsg("%02X. BPLM %08X (%02X)\n",nr,bp->GetOffset(),bp->GetValue());
 		} else if (bp->GetType()==BKPNT_MEMORY_PROT) {
 			DEBUG_ShowMsg("%02X. BPPM %04X:%08X (%02X)\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetValue());
 		} else if (bp->GetType()==BKPNT_MEMORY_LINEAR ) {
 			DEBUG_ShowMsg("%02X. BPLM %08X (%02X)\n",nr,bp->GetOffset(),bp->GetValue());
+		} else if (bp->GetType()==BKPNT_MEMORY_ACCESS) {
+			DEBUG_ShowMsg("%02X. BPMR %04X:%04X @ %04X\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetLength());
+		} else if (bp->GetType()==BKPNT_MEMORY_LINEAR_ACCESS) {
+			DEBUG_ShowMsg("%02X. BPLMR %08X @ %08X\n",nr,bp->GetOffset(),bp->GetLength());
+		} else if (bp->GetType()==BKPNT_MEMORY_PROT_ACCESS) {
+			DEBUG_ShowMsg("%02X. BPPMR %04X:%08X @ %08X\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetLength());
+		} else if (bp->GetType()==BKPNT_CHEAT) {
+			DEBUG_ShowMsg("%02X. CHEAT %04X:%04X (%02X)\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetData());
+		} else if (bp->GetType()==BKPNT_CHEAT_LINEAR) {
+			DEBUG_ShowMsg("%02X. CHEATP %08X (%02X)\n",nr,bp->GetOffset(),bp->GetData());
+		} else if (bp->GetType()==BKPNT_CHEAT_PROT) {
+			DEBUG_ShowMsg("%02X. CHEATP %04X:%08X (%02X)\n",nr,bp->GetSegment(),bp->GetOffset(),bp->GetData());
 		}
 		nr++;
 	}
@@ -877,6 +988,56 @@ bool DEBUG_ExitLoop(void)
 		return true;
 	}
 	return false;
+}
+
+DebugPageHandler::DebugPageHandler(PageHandler * _debug_pagehandler) {
+	debug_pagehandler = _debug_pagehandler;
+	debug_pagehandler->SetDebugPageHandler(this);
+	// don't r/w directly from memory, go through r/w methods
+	flags = (debug_pagehandler->flags & ~(PFLAG_READABLE | PFLAG_WRITEABLE))
+		| PFLAG_MEMBP;
+}
+Bit8u DebugPageHandler::readb(PhysPt addr) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_READABLE)
+		return host_readb(debug_pagehandler->GetHostReadPt(addr>>12) + (addr&0xfff));
+	else
+		return debug_pagehandler->readb(addr);
+}
+Bit16u DebugPageHandler::readw(PhysPt addr) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_READABLE)
+		return host_readw(debug_pagehandler->GetHostReadPt(addr>>12) + (addr&0xfff));
+	else
+		return debug_pagehandler->readw(addr);
+}
+Bit32u DebugPageHandler::readd(PhysPt addr) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_READABLE)
+		return host_readd(debug_pagehandler->GetHostReadPt(addr>>12) + (addr&0xfff));
+	else
+		return debug_pagehandler->readd(addr);
+}
+void DebugPageHandler::writeb(PhysPt addr,Bit8u val) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_WRITEABLE)
+		host_writeb(debug_pagehandler->GetHostWritePt(addr>>12) + (addr&0xfff), val);
+	else
+		debug_pagehandler->writeb(addr, val);
+}
+void DebugPageHandler::writew(PhysPt addr,Bit16u val) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_WRITEABLE)
+		host_writew(debug_pagehandler->GetHostWritePt(addr>>12) + (addr&0xfff), val);
+	else
+		debug_pagehandler->writew(addr, val);
+}
+void DebugPageHandler::writed(PhysPt addr,Bit32u val) {
+	CBreakpoint::CheckMemBreakpoint(addr);
+	if (debug_pagehandler->flags & PFLAG_WRITEABLE)
+		host_writed(debug_pagehandler->GetHostWritePt(addr>>12) + (addr&0xfff), val);
+	else
+		debug_pagehandler->writed(addr, val);
 }
 
 /********************/
@@ -1698,7 +1859,7 @@ bool ParseCommand(char* str) {
 	if (command == "BPM") { // Add new breakpoint
 		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
 		Bit32u ofs = GetHexValue(found,found);
-		CBreakpoint::AddMemBreakpoint(seg,ofs);
+		CBreakpoint::AddMemBreakpoint(seg,ofs,1);
 		DEBUG_ShowMsg("DEBUG: Set memory breakpoint at %04X:%04X\n",seg,ofs);
 		return true;
 	}
@@ -1706,7 +1867,7 @@ bool ParseCommand(char* str) {
 	if (command == "BPPM") { // Add new breakpoint
 		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
 		Bit32u ofs = GetHexValue(found,found);
-		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(seg,ofs);
+		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(seg,ofs,1);
 		if (bp)	{
 			bp->SetType(BKPNT_MEMORY_PROT);
 			DEBUG_ShowMsg("DEBUG: Set prot-mode memory breakpoint at %04X:%08X\n",seg,ofs);
@@ -1716,12 +1877,85 @@ bool ParseCommand(char* str) {
 
 	if (command == "BPLM") { // Add new breakpoint
 		Bit32u ofs = GetHexValue(found,found);
-		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(0,ofs);
+		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(0,ofs,1);
 		if (bp) bp->SetType(BKPNT_MEMORY_LINEAR);
 		DEBUG_ShowMsg("DEBUG: Set linear memory breakpoint at %08X\n",ofs);
 		return true;
 	}
 
+	if (command == "BPMR") { // Add new breakpoint
+		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
+		Bit32u ofs = GetHexValue(found,found);found++; // skip ":"
+		Bit32u len = GetHexValue(found,found);
+		if (len == 0) len = 1;
+		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(seg,ofs,len);
+		if (bp)
+		{
+			bp->SetType(BKPNT_MEMORY_ACCESS);
+			DEBUG_ShowMsg("DEBUG: Set memory read breakpoint at %04X:%04X @ %04x bytes\n",seg,ofs,len);
+		}
+		return true;
+	}
+
+	if (command == "BPPMR") { // Add new breakpoint
+		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
+		Bit32u ofs = GetHexValue(found,found);found++; // skip ":"
+		Bit32u len = GetHexValue(found,found);
+		if (len == 0) len = 1;
+		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(seg,ofs,len);
+		if (bp)
+		{
+			bp->SetType(BKPNT_MEMORY_PROT_ACCESS);
+			DEBUG_ShowMsg("DEBUG: Set prot-mode memory read breakpoint at %04X:%08X @ %08x bytes\n",seg,ofs,len);
+		}
+		return true;
+	}
+
+	if (command == "BPLMR") { // Add new breakpoint
+		Bitu ofs		= GetHexValue(found,found);found++; // skip ":"
+		Bitu len		= GetHexValue(found,found);
+		if (len == 0) len = 1;
+		CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(0,ofs,len);
+		if (bp) bp->SetType(BKPNT_MEMORY_LINEAR_ACCESS);
+		DEBUG_ShowMsg("DEBUG: Set linear memory read breakpoint at %08X @ %08x bytes\n",ofs,len);
+		return true;
+	}
+
+	if (command == "CHEAT") { // Add new breakpoint
+		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
+		Bit32u ofs = GetHexValue(found,found);found++; // skip ":"
+		Bit8u val = (Bit8u)GetHexValue(found,found);
+		CBreakpoint* bp = CBreakpoint::AddCheatBreakpoint(seg,ofs,val);
+		if (bp)
+		{
+			bp->SetType(BKPNT_CHEAT);
+			DEBUG_ShowMsg("DEBUG: Set memory cheat at %04X:%04X (%02x)\n",seg,ofs,val);
+		}
+		return true;
+	}
+
+	if (command == "CHEATP") { // Add new breakpoint
+		Bit16u seg = (Bit16u)GetHexValue(found,found);found++; // skip ":"
+		Bit32u ofs = GetHexValue(found,found);found++; // skip ":"
+		Bit8u val = (Bit8u)GetHexValue(found,found);
+		CBreakpoint* bp = CBreakpoint::AddCheatBreakpoint(seg,ofs,val);
+		if (bp)
+		{
+			bp->SetType(BKPNT_CHEAT_PROT);
+			DEBUG_ShowMsg("DEBUG: Set prot-mode memory cheat at %04X:%08X (%02x)\n",seg,ofs,val);
+		}
+		return true;
+	}
+
+	if (command == "CHEATL") { // Add new breakpoint
+		Bitu ofs		= GetHexValue(found,found);found++; // skip ":"
+		Bit8u val		= (Bit8u)GetHexValue(found,found);
+		CBreakpoint* bp = CBreakpoint::AddCheatBreakpoint(0,ofs,val);
+		if (bp) bp->SetType(BKPNT_CHEAT_LINEAR);
+		DEBUG_ShowMsg("DEBUG: Set linear memory cheat at %08X (%02x)\n",ofs,val);
+		return true;
+	}
+	
 #endif
 
 	if (command == "BPINT") { // Add Interrupt Breakpoint
@@ -2549,7 +2783,44 @@ bool ParseCommand(char* str) {
 	}
 
 #endif
-	if (command == "HELP" || command == "?") {
+
+	if (command == "INITSEARCH") { // Init Search
+		Bit16u seg = (Bit16u)GetHexValue(found,found); found++;
+		Bit32u ofs = GetHexValue(found,found); found++;
+		Bit32u num = GetHexValue(found,found); found++;
+		InitSearch(seg, ofs, num);
+		return true;
+	}
+
+	if (command == "DOSEARCH") { // Search
+		char func[6];
+		int i;
+		SearchFunc op;
+		for (i=0; i<5; i++) {
+			if ((found[i]!=' ') && (found[i]!=0)) func[i] = found[i]; 
+			else { func[i] = 0; break; };
+		};
+		func[5] = 0;
+		found+=i;
+		if (!strcmp(func,"EQ")) {
+			op = SearchFnEq;
+		} else if (!strcmp(func,"NE")) {
+			op = SearchFnNe;
+		} else if (!strcmp(func,"LT")) {
+			op = SearchFnLt;
+		} else if (!strcmp(func,"GT")) {
+			op = SearchFnGt;
+		} else if (!strcmp(func,"EQVAL")) {
+			op = SearchFnEqVal;
+		} else {
+			op = SearchFnEqVal;
+		}
+		Bit8u val = (Bit8u)GetHexValue(found,found); found++;
+		DoSearch(op, val);
+		return true;
+	}
+
+  if (command == "HELP" || command == "?") {
         DEBUG_BeginPagedContent();
 		DEBUG_ShowMsg("Debugger commands (enter all values in hex or as register):\n");
 		DEBUG_ShowMsg("Commands------------------------------------------------\n");
@@ -2561,6 +2832,12 @@ bool ParseCommand(char* str) {
 		DEBUG_ShowMsg("BPM    [segment]:[offset] - Set memory breakpoint (memory change).\n");
 		DEBUG_ShowMsg("BPPM   [selector]:[offset]- Set pmode-memory breakpoint (memory change).\n");
 		DEBUG_ShowMsg("BPLM   [linear address]   - Set linear memory breakpoint (memory change).\n");
+		DEBUG_ShowMsg("BPMR   [seg]:[offs] [len] - Set memory breakpoint (memory read).\n");
+		DEBUG_ShowMsg("BPPMR  [sel]:[offs] [len] - Set pmode-memory breakpoint (memory read).\n");
+		DEBUG_ShowMsg("BPLMR  [linear addr] [len]- Set linear memory breakpoint (memory read).\n");
+		DEBUG_ShowMsg("CHEAT  [seg]:[offs] [val] - Set memory to val on memory change.\n");
+		DEBUG_ShowMsg("CHEATP [sel]:[offs] [val] - Set pmode-memory to val on memory change.\n");
+		DEBUG_ShowMsg("CHEATL [linear addr] [val]- Set linear memory to val on memory change.\n");
 #endif
 		DEBUG_ShowMsg("BPLIST                    - List breakpoints.\n");		
 		DEBUG_ShowMsg("BPDEL  [bpNr] / *         - Delete breakpoint nr / all.\n");
@@ -2591,6 +2868,10 @@ bool ParseCommand(char* str) {
 		DEBUG_ShowMsg("MEMDUMP [seg]:[off] [len] - Write memory to file memdump.txt.\n");
 		DEBUG_ShowMsg("MEMDUMPBIN [s]:[o] [len]  - Write memory to file memdump.bin.\n");
 		DEBUG_ShowMsg("SELINFO [segName]         - Show selector info.\n");
+
+		DEBUG_ShowMsg("INITSEARCH [seg]:[off] [len] - Initialize a new cheat search in a memory area.\n");
+		DEBUG_ShowMsg("DOSEARCH EQVAL [value]    - Search for a specific value.\n");
+		DEBUG_ShowMsg("DOSEARCH EQ|NE|LT|GT      - Search for a value eq|ne|lt|gt than at last search.\n");
 
 		DEBUG_ShowMsg("INTVEC [filename]         - Writes interrupt vector table to file.\n");
 		DEBUG_ShowMsg("INTHAND [intNum]          - Set code view to interrupt handler.\n");
@@ -4309,6 +4590,84 @@ static void OutputVecTable(char* filename) {
 
 	fclose(f);
 	DEBUG_ShowMsg("DEBUG: Interrupt vector table written to %s.\n", filename);
+}
+
+static void InitSearch(Bitu seg, Bitu ofs1, Bit32u num) {
+	DEBUG_ShowMsg("DEBUG: Init called with params %04x:%04x - %04x.\n", seg, ofs1, num); 
+	SearchLength = num;
+	SearchSeg = seg;
+	SearchOfs = ofs1;
+	free(SearchBuffer);
+	free(SearchBufferValid);
+	SearchBuffer = (Bit8u *) malloc (num);
+	if (SearchBuffer == NULL) {
+		DEBUG_ShowMsg("DEBUG: Out Of Memory during search initialization.\n");
+		return;
+	}
+	SearchBufferValid = (Bit8u *) malloc (num);
+	if (SearchBufferValid == NULL) {
+		DEBUG_ShowMsg("DEBUG: Out Of Memory during search initialization.\n");
+		free(SearchBuffer);
+		SearchBuffer = NULL;
+		return;
+	}
+	for(Bitu x = 0; x < num;x++) {
+		SearchBuffer[x] = mem_readb(GetAddress(seg,ofs1+x));
+		SearchBufferValid[x] = 1;
+	}
+}
+
+static void DoSearch(SearchFunc op, Bit8u val) {
+	DEBUG_ShowMsg("DEBUG: DoSearch called with params %s, %04x.\n", 
+			(op==SearchFnEq)?"SearchFnEq":
+			(op==SearchFnNe)?"SearchFnNe":
+			(op==SearchFnLt)?"SearchFnLt":
+			(op==SearchFnGt)?"SearchFnGt":
+			(op==SearchFnEqVal)?"SearchFnEqVal":"unknown", val); 
+	Bitu nResults = 0;
+	for(Bitu x = 0; x < SearchLength;x++) {
+		if (SearchBufferValid[x] == 1) {
+			if (op(SearchBuffer[x], mem_readb(GetAddress(SearchSeg,SearchOfs+x)), val)) {
+				SearchBuffer[x] = mem_readb(GetAddress(SearchSeg,SearchOfs+x));
+				if (nResults < MAX_SEARCH_RESULTS) {
+					SearchResults[nResults][0] = SearchSeg;
+					SearchResults[nResults][1] = SearchOfs+x;
+				}
+				nResults++;
+			} else {
+				SearchBufferValid[x] = 0;
+			}
+		}
+	}
+	DEBUG_ShowMsg("DEBUG: %d results found.\n", nResults); 
+
+	if (nResults < MAX_SEARCH_RESULTS) {
+		for(Bitu x = 0; x < nResults; x++) {
+			DEBUG_ShowMsg("DEBUG: Match at %04x:%04x - %02x\n", SearchResults[x][0], SearchResults[x][1],
+					mem_readb(GetAddress(SearchResults[x][0],SearchResults[x][1])));
+		}
+	}
+}
+
+static int SearchFnEq(Bit8u lhs, Bit8u rhs, Bit8u val) {
+	return (lhs == rhs);
+}
+
+static int SearchFnNe(Bit8u lhs, Bit8u rhs, Bit8u val) {
+	return (lhs != rhs);
+}
+
+static int SearchFnLt(Bit8u lhs, Bit8u rhs, Bit8u val) {
+	return (lhs > rhs);
+}
+
+static int SearchFnGt(Bit8u lhs, Bit8u rhs, Bit8u val) {
+	return (lhs < rhs);
+}
+
+static int SearchFnEqVal(Bit8u lhs, Bit8u rhs, Bit8u val) {
+	// values can be 0 or 1 based, be liberal in what we accept
+	return ((rhs == val) || ((rhs+1) == val) || ((rhs-1) == val));
 }
 
 #define DEBUG_VAR_BUF_LEN 16

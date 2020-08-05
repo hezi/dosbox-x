@@ -80,6 +80,7 @@ static inline Bitu MEMMASK_Combine(const Bitu a,const Bitu b) {
 #define PFLAG_HASCODE		0x8u			//Page contains dynamic code
 #define PFLAG_NOCODE		0x10u			//No dynamic code can be generated here
 #define PFLAG_INIT			0x20u			//No dynamic code can be generated here
+#define PFLAG_MEMBP     0x40u     //Page contains memory access breakpoints
 
 #define LINK_START	((1024+64)/4)			//Start right after the HMA
 
@@ -105,7 +106,7 @@ public:
 	virtual bool writew_checked(PhysPt addr,Bit16u val);
 	virtual bool writed_checked(PhysPt addr,Bit32u val);
 
-#if 0//ENABLE IF PORTING ADDITIONAL CODE WRITTEN AGAINST THE OLDER PAGE HANDLER readb/writeb PROTYPE.
+#if 1//ENABLE IF PORTING ADDITIONAL CODE WRITTEN AGAINST THE OLDER PAGE HANDLER readb/writeb PROTYPE.
     // DEPRECATED. THIS IS HERE TO MAKE ANY DERIVED CLASS NOT YET UPDATED BLOW UP WITH A COMPILER ERROR.
     // FIXME: DOES VISUAL STUDIO 2017 HAVE ANY PROBLEMS WITH THIS? CLANG/LLVM?
 	virtual void writeb(PhysPt addr,Bitu val) final = delete;
@@ -117,7 +118,18 @@ public:
 #endif
 
     PageHandler(void) : flags(0) { }
-	Bitu flags; 
+#if C_DEBUG
+    PageHandler *GetDebugPageHandler(void) {
+      return debug_pagehandler;
+    }
+    void SetDebugPageHandler(PageHandler * _debug_pagehandler) {
+      debug_pagehandler = _debug_pagehandler;
+    }
+#endif
+	Bitu flags;
+#if C_DEBUG
+  PageHandler * debug_pagehandler;
+#endif
 	Bitu getFlags() const {
 		return flags;
 	}
@@ -129,6 +141,22 @@ private:
 	PageHandler(const PageHandler&);
 
 };
+
+#if C_DEBUG
+class DebugPageHandler : public PageHandler {
+public:
+  DebugPageHandler() {
+    flags = PFLAG_MEMBP;
+  }
+  DebugPageHandler(PageHandler * _debug_pagehandler);
+  Bit8u readb(PhysPt addr);
+	Bit16u readw(PhysPt addr);
+	Bit32u readd(PhysPt addr);
+	void writeb(PhysPt addr,Bit8u val);
+	void writew(PhysPt addr,Bit16u val);
+	void writed(PhysPt addr,Bit32u val);
+ };
+#endif
 
 /* NTS: To explain the Install() method, the caller not only provides the IOMASK_.. value, but ANDs
  *      the least significant bits to define the range of I/O ports to respond to. An ISA Sound Blaster

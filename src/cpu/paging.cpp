@@ -608,7 +608,11 @@ static void PAGING_LinkPageNew(Bitu lin_page, Bitu phys_page, Bitu linkmode, boo
 
 class NewInitPageHandler : public PageHandler {
 public:
-	NewInitPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {}
+	NewInitPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {
+#if C_DEBUG
+    debug_pagehandler = NULL;
+#endif
+	}
 	Bit8u readb(PhysPt addr) {
 		InitPage(addr, false, false);
 		return mem_readb(addr);
@@ -784,6 +788,9 @@ bool PAGING_MakePhysPage(Bitu & page) {
 static NewInitPageHandler init_page_handler;
 static ExceptionPageHandler exception_handler;
 static PageFoilHandler foiling_handler;
+#if C_DEBUG
+static DebugPageHandler init_debug_page_handler(&init_page_handler);
+#endif
 
 Bitu PAGING_GetDirBase(void) {
 	return paging.cr3;
